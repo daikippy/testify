@@ -3,25 +3,43 @@
 import React, { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
+type RecordItem = {
+  id: string;
+  user_id: string;
+  title: string | null;
+  content: string | null;
+  created_at: string | null;
+  is_public: boolean | null;
+  display_name: string | null;
+};
+
 export default function Page() {
   const [user, setUser] = useState<any | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [records, setRecords] = useState<any[]>([]);
+  const [isPublic, setIsPublic] = useState(false);
+  const [myRecords, setMyRecords] = useState<RecordItem[]>([]);
+  const [publicRecords, setPublicRecords] = useState<RecordItem[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // 初回セッション取得
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
-      fetchRecords();
+      fetchAll();
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
-      fetchRecords();
+      fetchAll();
     });
     return () => listener?.subscription.unsubscribe();
   }, []);
+
+  async function fetchAll() {
+    await fetchMyRecords();
+    await fetchPublicRecords();
+  }
 
   async function signInWithGoogle() {
     await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
@@ -30,7 +48,7 @@ export default function Page() {
   async function signOut() {
     await supabase.auth.signOut();
     setUser(null);
-    setRecords([]);
+    setMyRecords([]);
   }
 
   async function handleSubmit(e?: React.FormEvent) {
@@ -39,133 +57,159 @@ export default function Page() {
     if (!title && !content) return alert("タイトルか本文を入力してください");
 
     setLoading(true);
+    const displayName = user.user_metadata?.full_name ?? user.email ?? "匿名";
+
     const { error } = await supabase.from("records").insert([{
       user_id: user.id,
       title,
       content,
+      is_public: isPublic,
+      display_name: displayName
     }]);
 
     if (error) {
       console.error(error);
       alert("保存に失敗しました。");
     } else {
-      setTitle(""); setContent("");
-      fetchRecords();
+      setTitle(""); setContent(""); setIsPublic(false);
+      await fetchAll();
     }
     setLoading(false);
   }
 
-  async function fetchRecords() {
+  async function fetchMyRecords() {
+    if (!user) {
+      setMyRecords([]);
+      return;
+    }
     const { data, error } = await supabase
-      .from("records")
+      .from<RecordItem>("records")
       .select("*")
+      .eq("user_id", user.id)
       .order("created_at", { ascending: false });
-    if (!error) setRecords(data ?? []);
+    if (!error) setMyRecords(data ?? []);
+  }
+
+  async function fetchPublicRecords() {
+    // 公開されているものを取得（誰でも見られる）
+    const { data, error } = await supabase
+      .from<RecordItem>("records")
+      .select("*")
+      .eq("is_public", true)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (!error) setPublicRecords(data ?? []);
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm("本当に削除しますか？（復元できません）")) return;
+    const { error } = await supabase.from("records").delete().eq("id", id);
+    if (error) {
+      console.error(error);
+      alert("削除に失敗しました。");
+    } else {
+      await fetchAll();
+    }
   }
 
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 font-sans selection:bg-blue-100">
-      {/* ナビゲーションバー */}
       <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100">
-        <div className="max-w-2xl mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="max-w-3xl mx-auto px-4 h-16 flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
             <span className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white text-lg">T</span>
             Testify
           </h1>
           <div>
             {user ? (
-              <button onClick={signOut} className="text-xs font-medium text-slate-500 hover:text-slate-800 transition">サインアウト</button>
+              <div className="flex items-center gap-3">
+                <span className="hidden sm:inline text-xs text-slate-500">{user.email}</span>
+                <button onClick={signOut} className="text-xs bg-slate-200 px-3 py-1 rounded-full">サインアウト</button>
+              </div>
             ) : (
-              <button onClick={signInWithGoogle} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-full font-semibold hover:bg-slate-800 transition shadow-sm">ログイン</button>
+              <button onClick={signInWithGoogle} className="bg-blue-600 text-white px-5 py-2 rounded-full font-bold">ログイン</button>
             )}
           </div>
         </div>
       </nav>
 
-      <main className="max-w-2xl mx-auto px-4 py-8 space-y-10">
-        
-        {/* メインメッセージ・フォーム */}
+      <main className="max-w-3xl mx-auto px-4 py-8 space-y-10">
+        {/* 投稿フォーム（ログイン時） */}
         {user ? (
-          <section className="space-y-6">
-            <div className="text-center space-y-2">
-              <h2 className="text-2xl font-bold text-slate-900">こんにちは、{user.user_metadata.full_name || '兄弟姉妹'}</h2>
-              <p className="text-slate-500 text-sm italic">今日、霊的に学んだことや感じた証は何ですか？</p>
-            </div>
-
-            <form onSubmit={handleSubmit} className="bg-white p-6 sm:p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-50 space-y-5">
-              <div className="space-y-4">
-                <input 
-                  value={title} 
-                  onChange={(e)=>setTitle(e.target.value)} 
-                  placeholder="タイトル（例：今日の聖句から、祈りの答え）" 
-                  className="w-full p-0 text-xl font-bold placeholder:text-slate-300 border-none focus:ring-0 outline-none" 
-                />
-                <textarea 
-                  value={content} 
-                  onChange={(e)=>setContent(e.target.value)} 
-                  placeholder="ここに思いを書き留めてください..." 
-                  rows={6} 
-                  className="w-full p-0 text-slate-600 placeholder:text-slate-300 border-none focus:ring-0 outline-none resize-none leading-relaxed" 
-                />
-              </div>
-              <div className="pt-4 border-t border-slate-50 flex justify-end">
-                <button 
-                  type="submit" 
-                  disabled={loading} 
-                  className={`px-8 py-3 rounded-2xl font-bold text-white transition shadow-md ${loading ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700 active:scale-95'}`}
-                >
-                  {loading ? "保存中..." : "記録を保存する"}
+          <section className="space-y-4">
+            <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl shadow space-y-4">
+              <input value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="タイトル" className="w-full p-3 border rounded" />
+              <textarea value={content} onChange={(e)=>setContent(e.target.value)} placeholder="本文" rows={4} className="w-full p-3 border rounded" />
+              <div className="flex items-center justify-between gap-4">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={isPublic} onChange={(e)=>setIsPublic(e.target.checked)} />
+                  公開する（みんなに見える）
+                </label>
+                <button type="submit" disabled={loading} className="bg-blue-600 text-white px-4 py-2 rounded">
+                  {loading ? "保存中..." : "保存する"}
                 </button>
               </div>
             </form>
+
+            {/* マイ投稿 */}
+            <div>
+              <h3 className="text-lg font-bold">あなたの記録</h3>
+              <div className="mt-3 space-y-3">
+                {myRecords.length === 0 ? (
+                  <div className="text-slate-500">まだ投稿がありません。</div>
+                ) : myRecords.map(r => (
+                  <div key={r.id} className="bg-white p-4 rounded shadow flex justify-between items-start">
+                    <div>
+                      <div className="font-bold">{r.title || "無題"}</div>
+                      <div className="text-sm text-slate-600 whitespace-pre-wrap">{r.content}</div>
+                      <div className="text-xs text-slate-400 mt-2">{new Date(r.created_at || "").toLocaleString()}</div>
+                      <div className="text-xs mt-1">{r.is_public ? "公開中" : "非公開"}</div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <button onClick={() => handleDelete(r.id)} className="text-red-500 text-sm">削除</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
         ) : (
-          <section className="bg-white p-12 rounded-[2.5rem] shadow-sm border border-slate-100 text-center space-y-6">
-            <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto text-3xl">🛡️</div>
-            <div className="space-y-2">
-              <h2 className="text-2xl font-bold text-slate-900 italic">"わたしのすべての証を、真実であることを記録する"</h2>
-              <p className="text-slate-500 max-w-xs mx-auto text-sm leading-relaxed">神様から受けた霊的な気づきを、安全に一箇所にまとめましょう。</p>
+          <section className="bg-white p-8 rounded shadow text-center">
+            <h2 className="text-xl font-bold">ログインして記録を始めましょう</h2>
+            <p className="text-slate-500 mt-2">公開したいものは「公開する」にチェックしてください。</p>
+            <div className="mt-4">
+              <button onClick={signInWithGoogle} className="bg-blue-600 text-white px-4 py-2 rounded">Googleでログイン</button>
             </div>
-            <button onClick={signInWithGoogle} className="bg-blue-600 text-white px-8 py-4 rounded-2xl font-bold shadow-xl hover:shadow-blue-200 transition active:scale-95">
-              Googleでログインして始める
-            </button>
           </section>
         )}
 
-        {/* 記録の一覧 */}
-        <section className="space-y-6">
-          <div className="flex items-center justify-between px-2">
-            <h3 className="text-sm font-bold text-slate-400 tracking-widest uppercase">あなたの歩み</h3>
-            <span className="text-xs text-slate-400">{records.length} 件の記録</span>
+        {/* 公開フィード */}
+        <section>
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-bold">公開フィード</h3>
+            <span className="text-sm text-slate-400">{publicRecords.length} 件</span>
           </div>
-          
-          <div className="grid gap-6">
-            {records.length === 0 ? (
-              <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-slate-200">
-                <p className="text-slate-400">まだ記録がありません。最初の証を残しましょう。</p>
-              </div>
-            ) : (
-              records.map((r:any) => (
-                <article key={r.id} className="group bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-slate-50 hover:shadow-md transition duration-300">
-                  <header className="flex justify-between items-start mb-4">
-                    <h4 className="font-bold text-xl text-slate-900 group-hover:text-blue-700 transition">{r.title || "無題"}</h4>
-                    <time className="text-[10px] font-mono text-slate-300 mt-1 uppercase tracking-wider">{new Date(r.created_at).toLocaleDateString()}</time>
-                  </header>
-                  <p className="text-slate-600 leading-relaxed whitespace-pre-wrap italic">
-                    {r.content}
-                  </p>
-                  <footer className="mt-6 pt-4 border-t border-slate-50 flex justify-end items-center gap-2">
-                     <div className="text-[10px] text-slate-300 italic">Testified on {new Date(r.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
-                  </footer>
-                </article>
-              ))
-            )}
+          <div className="mt-4 space-y-4">
+            {publicRecords.length === 0 ? (
+              <div className="text-slate-500">まだ公開された記録はありません。</div>
+            ) : publicRecords.map(r => (
+              <article key={r.id} className="bg-white p-4 rounded shadow">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold">{r.title || "無題"}</div>
+                    <div className="text-xs text-slate-400">{r.display_name ?? "投稿者不明"}</div>
+                  </div>
+                  <div className="text-xs text-slate-400">{new Date(r.created_at || "").toLocaleDateString()}</div>
+                </div>
+                <p className="mt-3 text-slate-600 whitespace-pre-wrap">{r.content}</p>
+              </article>
+            ))}
           </div>
         </section>
       </main>
 
-      <footer className="py-20 text-center">
-        <p className="text-slate-300 text-xs tracking-widest uppercase">© 2026 Testify App</p>
+      <footer className="py-8 text-center text-slate-400">
+        © 2026 Testify
       </footer>
     </div>
   );
