@@ -11,13 +11,13 @@ export default function Page() {
   const [myRecords, setMyRecords] = useState<any[]>([]);
   const [publicRecords, setPublicRecords] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
       fetchAll();
     });
-
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       fetchAll();
@@ -43,141 +43,126 @@ export default function Page() {
   async function handleSubmit(e?: React.FormEvent) {
     if (e) e.preventDefault();
     if (!user) return alert("まずログインしてください");
-    if (!title && !content) return alert("タイトルか本文を入力してください");
+    if (!title && !content) return alert("内容を入力してください");
 
     setLoading(true);
     const displayName = user.user_metadata?.full_name ?? user.email ?? "匿名";
 
-    const { error } = await supabase.from("records").insert([{
-      user_id: user.id,
-      title,
-      content,
-      is_public: isPublic,
-      display_name: displayName
-    }]);
-
-    if (error) {
-      console.error(error);
-      alert("保存に失敗しました。");
+    if (editingId) {
+      // 編集（更新）
+      const { error } = await supabase.from("records").update({
+        title, content, is_public: isPublic
+      }).eq("id", editingId);
+      if (error) alert("更新に失敗しました。");
+      setEditingId(null);
     } else {
-      setTitle(""); setContent(""); setIsPublic(false);
-      await fetchAll();
+      // 新規作成
+      const { error } = await supabase.from("records").insert([{
+        user_id: user.id, title, content, is_public: isPublic, display_name: displayName, reactions: []
+      }]);
+      if (error) alert("保存に失敗しました。");
     }
+
+    setTitle(""); setContent(""); setIsPublic(false);
+    await fetchAll();
     setLoading(false);
   }
 
   async function fetchMyRecords() {
-    // ログインしていない場合はスキップ
-    const currentSession = await supabase.auth.getSession();
-    const currentUser = currentSession.data.session?.user;
-    if (!currentUser) return;
-
-    const { data, error } = await supabase
-      .from("records")
-      .select("*")
-      .eq("user_id", currentUser.id)
-      .order("created_at", { ascending: false });
-    if (!error) setMyRecords(data ?? []);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return;
+    const { data } = await supabase.from("records").select("*").eq("user_id", session.user.id).order("created_at", { ascending: false });
+    setMyRecords(data ?? []);
   }
 
   async function fetchPublicRecords() {
-    const { data, error } = await supabase
-      .from("records")
-      .select("*")
-      .eq("is_public", true)
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (!error) setPublicRecords(data ?? []);
+    const { data } = await supabase.from("records").select("*").eq("is_public", true).order("created_at", { ascending: false }).limit(50);
+    setPublicRecords(data ?? []);
+  }
+
+  async function handleAmen(record: any) {
+    if (!user) return alert("ログインしてアーメンしましょう！");
+    const currentReactions = record.reactions || [];
+    const newReactions = currentReactions.includes(user.id) 
+      ? currentReactions.filter((id: string) => id !== user.id) 
+      : [...currentReactions, user.id];
+    
+    await supabase.from("records").update({ reactions: newReactions }).eq("id", record.id);
+    fetchAll();
+  }
+
+  async function handleEdit(r: any) {
+    setEditingId(r.id);
+    setTitle(r.title);
+    setContent(r.content);
+    setIsPublic(r.is_public);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function handleDelete(id: string) {
     if (!confirm("本当に削除しますか？")) return;
-    const { error } = await supabase.from("records").delete().eq("id", id);
-    if (error) {
-      alert("削除に失敗しました。");
-    } else {
-      await fetchAll();
-    }
+    await supabase.from("records").delete().eq("id", id);
+    fetchAll();
   }
 
   return (
-    <div className="min-h-screen bg-[#f8f9fa] text-slate-800 font-sans">
-      <nav className="sticky top-0 z-50 bg-white shadow-sm">
-        <div className="max-w-3xl mx-auto px-4 h-16 flex items-center justify-between">
-          <h1 className="text-xl font-bold flex items-center gap-2">
-            <span className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">T</span>
-            Testify
-          </h1>
-          <div>
-            {user ? (
-              <button onClick={signOut} className="text-xs bg-slate-100 px-3 py-1 rounded-full">サインアウト</button>
-            ) : (
-              <button onClick={signInWithGoogle} className="bg-blue-600 text-white px-4 py-2 rounded-full text-sm font-bold">ログイン</button>
-            )}
-          </div>
-        </div>
+    <div className="min-h-screen bg-[#f0f2f5] text-slate-800 pb-20">
+      <nav className="bg-white px-4 py-3 sticky top-0 z-10 shadow-sm flex items-center justify-between">
+        <h1 className="text-xl font-black text-blue-600 italic tracking-tighter">Testify+</h1>
+        {user ? (
+          <button onClick={signOut} className="text-xs text-slate-400">SignOut</button>
+        ) : (
+          <button onClick={signInWithGoogle} className="bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold">Login</button>
+        )}
       </nav>
 
-      <main className="max-w-3xl mx-auto px-4 py-8 space-y-12">
-        {user ? (
-          <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl shadow-sm border space-y-4">
-            <h2 className="font-bold text-lg">新しい記録</h2>
-            <input value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="タイトル" className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-100" />
-            <textarea value={content} onChange={(e)=>setContent(e.target.value)} placeholder="今日感じた証や学び..." rows={4} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-100" />
+      <main className="max-w-xl mx-auto p-4 space-y-8">
+        {user && (
+          <form onSubmit={handleSubmit} className="bg-white p-6 rounded-3xl shadow-sm border-2 border-white space-y-4">
+            <h2 className="font-bold text-sm text-slate-400 uppercase tracking-widest">{editingId ? "編集モード" : "今の気持ちを記録"}</h2>
+            <input value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="タイトル" className="w-full bg-slate-50 p-3 rounded-2xl outline-none focus:bg-white border-2 border-transparent focus:border-blue-100 transition" />
+            <textarea value={content} onChange={(e)=>setContent(e.target.value)} placeholder="霊的な学びや証をここに..." rows={3} className="w-full bg-slate-50 p-3 rounded-2xl outline-none focus:bg-white border-2 border-transparent focus:border-blue-100 transition resize-none" />
             <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-                <input type="checkbox" checked={isPublic} onChange={(e)=>setIsPublic(e.target.checked)} className="rounded text-blue-600" />
-                みんなに公開する
+              <label className="text-xs bg-slate-100 px-3 py-1 rounded-full cursor-pointer hover:bg-slate-200 transition">
+                <input type="checkbox" checked={isPublic} onChange={(e)=>setIsPublic(e.target.checked)} className="mr-2" />
+                公開フィードに流す
               </label>
-              <button type="submit" disabled={loading} className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold shadow-md hover:bg-blue-700 transition">
-                {loading ? "保存中..." : "保存する"}
-              </button>
+              <div className="flex gap-2">
+                {editingId && <button type="button" onClick={()=>{setEditingId(null); setTitle(""); setContent("");}} className="text-xs px-4 py-2">キャンセル</button>}
+                <button type="submit" disabled={loading} className="bg-slate-900 text-white px-6 py-2 rounded-2xl font-bold shadow-lg shadow-slate-200">{loading ? "..." : (editingId ? "更新" : "投稿")}</button>
+              </div>
             </div>
           </form>
-        ) : null}
-
-        {/* 自分の投稿 */}
-        {user && (
-          <section className="space-y-4">
-            <h3 className="font-bold text-slate-400 text-xs tracking-widest uppercase">My Testimonies</h3>
-            <div className="grid gap-4">
-              {myRecords.length === 0 ? <p className="text-sm text-slate-400">自分の記録はまだありません。</p> : myRecords.map(r => (
-                <div key={r.id} className="bg-white p-5 rounded-2xl border shadow-sm flex justify-between items-start">
-                  <div className="space-y-1">
-                    <p className="font-bold">{r.title || "無題"}</p>
-                    <p className="text-slate-600 text-sm">{r.content}</p>
-                    <p className="text-[10px] text-slate-300 uppercase">{r.is_public ? "● 公開中" : "○ 非公開"}</p>
-                  </div>
-                  <button onClick={() => handleDelete(r.id)} className="text-slate-300 hover:text-red-500 transition text-xs">削除</button>
-                </div>
-              ))}
-            </div>
-          </section>
         )}
 
-        {/* 公開フィード */}
-        <section className="space-y-4">
-          <h3 className="font-bold text-slate-400 text-xs tracking-widest uppercase">Public Feed</h3>
-          <div className="grid gap-6">
-            {publicRecords.length === 0 ? (
-              <div className="text-center py-10 bg-white rounded-2xl border border-dashed text-slate-400">まだ公開された投稿はありません。</div>
-            ) : publicRecords.map(r => (
-              <article key={r.id} className="bg-white p-6 rounded-2xl shadow-sm border">
-                <div className="flex justify-between items-center mb-3">
-                  <span className="text-xs font-bold text-blue-600">{r.display_name}</span>
-                  <span className="text-[10px] text-slate-300">{new Date(r.created_at).toLocaleDateString()}</span>
-                </div>
-                <h4 className="font-bold text-lg mb-2">{r.title || "無題"}</h4>
-                <p className="text-slate-600 text-sm leading-relaxed">{r.content}</p>
-              </article>
-            ))}
-          </div>
+        <section className="space-y-6">
+          <h3 className="font-black text-2xl px-2">Public Feed</h3>
+          {publicRecords.map(r => (
+            <article key={r.id} className="bg-white p-6 rounded-[2rem] shadow-sm border border-white hover:border-blue-100 transition">
+              <div className="flex justify-between items-center mb-4 text-[10px] font-bold text-slate-300 tracking-tighter uppercase">
+                <span>{r.display_name}</span>
+                <span>{new Date(r.created_at).toLocaleDateString()}</span>
+              </div>
+              <h4 className="font-black text-xl mb-2">{r.title || "Untitled"}</h4>
+              <p className="text-slate-500 leading-relaxed text-sm mb-6">{r.content}</p>
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => handleAmen(r)}
+                  className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold border transition ${r.reactions?.includes(user?.id) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-400 border-slate-100 hover:border-blue-200'}`}
+                >
+                  🙏 {r.reactions?.length || 0} Amen
+                </button>
+                {user?.id === r.user_id && (
+                  <div className="flex gap-3 text-[10px] font-bold text-slate-300 ml-auto uppercase tracking-widest">
+                    <button onClick={() => handleEdit(r)} className="hover:text-blue-500">Edit</button>
+                    <button onClick={() => handleDelete(r.id)} className="hover:text-red-500">Delete</button>
+                  </div>
+                )}
+              </div>
+            </article>
+          ))}
         </section>
       </main>
-
-      <footer className="py-10 text-center text-slate-300 text-[10px] uppercase tracking-[0.2em]">
-        © 2026 Testify App
-      </footer>
     </div>
   );
 }
